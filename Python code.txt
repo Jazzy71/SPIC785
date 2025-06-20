@@ -1,0 +1,425 @@
+from flask import Flask, request, jsonify, send_file
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt  # Import Bcrypt for password hashing
+from sqlalchemy.orm import class_mapper, ColumnProperty
+from sqlalchemy.orm.attributes import InstrumentedAttribute
+from sqlalchemy import func
+from sqlalchemy import text
+from sqlalchemy import Integer
+import os
+
+import smtplib
+import random
+import base64
+import os
+import uuid
+from flask_restful import Api
+from datetime import datetime, timedelta
+from textblob import TextBlob
+
+import pymysql
+pymysql.install_as_MySQLdb()
+
+app = Flask(__name__)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:0602@192.168.4.183/carnest'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = 'saipavan'
+bcrypt = Bcrypt(app)
+
+db = SQLAlchemy(app)
+
+class userdetails(db.Model):
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)  # Add autoincrement explicitly
+    name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(255), unique=True, nullable=False)
+    password = db.Column(db.String(255), nullable=False)
+    mobilenumber = db.Column(db.String(15), nullable=False)
+    location = db.Column(db.String(100), nullable=False)
+
+@app.route('/signup', methods=['POST'])
+def signup():
+    try:
+        data = request.get_json()
+        name = data.get('name')
+        email = data.get('email')
+        password = data.get('password')
+        mobilenumber = data.get('mobilenumber')
+        location = data.get('location')
+
+        if not all([name, email, password, mobilenumber, location]):
+            return jsonify({'message': 'All fields are required'}), 400
+
+        # Check if user already exists
+        if userdetails.query.filter_by(email=email).first():
+            return jsonify({'message': 'User already exists'}), 409
+
+        password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+
+        new_user = userdetails(
+            name=name,
+            email=email,
+            password=password_hash,
+            mobilenumber=mobilenumber,
+            location=location
+        )
+
+        db.session.add(new_user)
+        db.session.commit()
+
+        return jsonify({'message': 'User registered successfully'}), 201
+
+    except Exception as e:
+        db.session.rollback()  # Add rollback on error
+        print(f"Error: {str(e)}")  # For debugging
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+
+        if not all([email, password]):
+            return jsonify({'message': 'Email and password are required'}), 400
+
+        user = userdetails.query.filter_by(email=email).first()
+        if not user or not bcrypt.check_password_hash(user.password, password):
+            return jsonify({'message': 'Invalid email or password'}), 401
+
+        return jsonify({
+                'message': 'Login successful',
+                'user': {
+                    'id': user.id,
+                    'name': user.name,
+                    'email': user.email,
+                    'mobilenumber': user.mobilenumber,
+                    'location': user.location
+                }
+            }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+class Evaluate(db.Model):
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.Text)
+    location = db.Column(db.Text)
+    type = db.Column(db.Text)
+    year = db.Column(db.Text)
+    km = db.Column(db.Text)
+    fuel = db.Column(db.Text)
+    price = db.Column(db.Text)
+
+
+@app.route('/evaluate', methods=['POST'])
+def add_evaluate():
+    try:
+        data = request.get_json()
+
+        name = data.get('name')
+        location = data.get('location')
+        type_ = data.get('type')  # type is a Python keyword, so use type_
+        year = data.get('year')
+        km = data.get('km')
+        fuel = data.get('fuel')
+        price = data.get('price')
+
+        # Basic validation: ensure required fields are provided
+        if not all([name, location, type_, year, km, fuel, price]):
+            return jsonify({'message': 'All fields are required'}), 400
+
+        new_entry = Evaluate(
+            name=name,
+            location=location,
+            type=type_,
+            year=year,
+            km=km,
+            fuel=fuel,
+            price=price
+        )
+        db.session.add(new_entry)
+        db.session.commit()
+
+        return jsonify({'message': 'Evaluate entry added successfully', 'id': new_entry.id}), 201
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/evaluate', methods=['GET'])
+def get_all_evaluates():
+    try:
+        entries = Evaluate.query.all()
+        result = []
+
+        for entry in entries:
+            result.append({
+                'id': entry.id,
+                'name': entry.name,
+                'location': entry.location,
+                'type': entry.type,
+                'year': entry.year,
+                'km': entry.km,
+                'fuel': entry.fuel,
+                'price': entry.price
+            })
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+class Recent(db.Model):
+    __tablename__ = 'recent'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    email = db.Column(db.String, nullable=False)
+
+# Route to receive email and save to database
+@app.route('/submit-email', methods=['POST'])
+def submit_email():
+    data = request.get_json()
+    email = data.get('email')
+
+    if not email:
+        return jsonify({'error': 'Email is required'}), 400
+
+    new_entry = Recent(email=email)
+    db.session.add(new_entry)
+    db.session.commit()
+
+    return jsonify({'message': 'Email saved successfully'}), 201
+
+
+@app.route('/last-email', methods=['GET'])
+def get_last_email():
+    last_entry = Recent.query.order_by(Recent.id.desc()).first()
+    
+    if not last_entry:
+        return jsonify({'error': 'No email found'}), 404
+
+    return jsonify({'email': last_entry.email}), 200
+
+
+@app.route('/last-email-name', methods=['GET'])
+def get_name_from_last_email():
+    # Get the most recent email from 'recent' table
+    last_entry = Recent.query.order_by(Recent.id.desc()).first()
+
+    if not last_entry:
+        return jsonify({'error': 'No recent email found'}), 404
+
+    # Find user in 'userdetails' table with that email
+    user = userdetails.query.filter_by(email=last_entry.email).first()
+
+    if not user:
+        return jsonify({'error': 'User not found for that email'}), 404
+
+    # Return only the name
+    return jsonify({'name': user.name}), 200
+
+@app.route('/last-email-user-info', methods=['GET'])
+def get_user_info_from_last_email():
+    # Get the most recent email
+    last_entry = Recent.query.order_by(Recent.id.desc()).first()
+
+    if not last_entry:
+        return jsonify({'error': 'No recent email found'}), 404
+
+    # Find user in 'userdetails' with matching email
+    user = userdetails.query.filter_by(email=last_entry.email).first()
+
+    if not user:
+        return jsonify({'error': 'User not found for that email'}), 404
+
+    # Return name, mobilenumber, and email
+    return jsonify({
+        'name': user.name,
+        'mobilenumber': user.mobilenumber,
+        'email': user.email
+    }), 200
+
+
+@app.route('/last-email-full-info-1', methods=['GET'])
+def get_full_user_info_from_last_email():
+    # Get the most recent email from the 'recent' table
+    last_entry = Recent.query.order_by(Recent.id.desc()).first()
+
+    if not last_entry:
+        return jsonify({'error': 'No recent email found'}), 404
+
+    # Query the userdetails table using the email
+    user = userdetails.query.filter_by(email=last_entry.email).first()
+
+    if not user:
+        return jsonify({'error': 'User not found for that email'}), 404
+
+    # Return full user details: name, mobilenumber, email, and location
+    return jsonify({
+        'name': user.name,
+        'mobilenumber': user.mobilenumber,
+        'email': user.email,
+        'location': user.location
+    }), 200
+
+@app.route('/contact-seller', methods=['POST'])
+def contact_seller():
+    try:
+        data = request.get_json()
+        
+        # Get required fields
+        car_name = data.get('car_name')
+        buyer_email = data.get('buyer_email', 'buyer@example.com')  # You might get this from session/auth
+        
+        if not car_name:
+            return jsonify({'error': 'Car name is required'}), 400
+        
+        # Get car details from Evaluate table
+        car = Evaluate.query.filter_by(name=car_name).first()
+        if not car:
+            return jsonify({'error': 'Car not found'}), 404
+        
+        # Create car details string
+        car_details = f"{car.year} - {car.km} - {car.fuel} - {car.type} - {car.location}"
+        
+        # Create notification message
+        notification_message = f"Someone is interested in your car '{car_name}' ({car_details}). They would like to contact you for purchase."
+        
+        # Get the most recent email from recent table (assuming this is the seller)
+        last_entry = Recent.query.order_by(Recent.id.desc()).first()
+        if not last_entry:
+            return jsonify({'error': 'No seller contact found'}), 404
+        
+        seller_email = last_entry.email
+        
+        # Save notification to database (assuming you have a Notification model)
+        # You'll need to create this table and model:
+        # notification = Notification(
+        #     user_email=seller_email,
+        #     car_name=car_name,
+        #     car_details=car_details,
+        #     message=notification_message,
+        #     notification_type='contact_seller',
+        #     created_at=datetime.now(),
+        #     is_read=False
+        # )
+        # db.session.add(notification)
+        # db.session.commit()
+        
+        # For now, we'll just return success
+        
+        return jsonify({
+            'success': True,
+            'message': 'Seller has been notified of your interest',
+            'notification_sent_to': seller_email,
+            'car_name': car_name,
+            'car_details': car_details
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/get-notifications', methods=['GET'])
+def get_notifications():
+    try:
+        # Get email from query params or use the most recent email
+        user_email = request.args.get('email')
+        
+        if not user_email:
+            last_entry = Recent.query.order_by(Recent.id.desc()).first()
+            if not last_entry:
+                return jsonify({'error': 'No user email found'}), 404
+            user_email = last_entry.email
+        
+        # Get actual car names from Evaluate table for realistic notifications
+        cars = Evaluate.query.limit(3).all()
+        
+        # Create dynamic notifications based on actual cars in database
+        notifications = []
+        for i, car in enumerate(cars):
+            car_details = f"{car.year} - {car.km} - {car.fuel} - {car.type}"
+            notifications.append({
+                'id': i + 1,
+                'message': f"Someone is interested in your car '{car.name}' ({car_details}). They would like to contact you for purchase.",
+                'car_name': car.name,
+                'car_details': car_details,
+                'location': car.location,
+                'price': car.price,
+                'notification_type': 'contact_seller',
+                'created_at': datetime.now().isoformat(),
+                'is_read': False
+            })
+        
+        # Add a few more sample notifications
+        if len(notifications) < 2:
+            notifications.extend([
+                {
+                    'id': len(notifications) + 1,
+                    'message': "Your car listing has received high interest. Multiple buyers are asking for details.",
+                    'car_name': 'Your Listed Car',
+                    'car_details': 'High demand',
+                    'notification_type': 'high_interest',
+                    'created_at': datetime.now().isoformat(),
+                    'is_read': False
+                },
+                {
+                    'id': len(notifications) + 2,
+                    'message': "A buyer wants to schedule a test drive for your car.",
+                    'car_name': 'Test Drive Request',
+                    'car_details': 'Schedule needed',
+                    'notification_type': 'test_drive',
+                    'created_at': datetime.now().isoformat(),
+                    'is_read': False
+                }
+            ])
+        
+        # If you have actual notification table, use this instead:
+        # notifications_query = Notification.query.filter_by(user_email=user_email).order_by(Notification.created_at.desc()).all()
+        # notifications = [
+        #     {
+        #         'id': notif.id,
+        #         'message': notif.message,
+        #         'car_name': notif.car_name,
+        #         'car_details': notif.car_details,
+        #         'notification_type': notif.notification_type,
+        #         'created_at': notif.created_at.isoformat(),
+        #         'is_read': notif.is_read
+        #     } for notif in notifications_query
+        # ]
+        
+        return jsonify({
+            'notifications': notifications,
+            'count': len(notifications)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/mark-notification-read/<int:notification_id>', methods=['PUT'])
+def mark_notification_read(notification_id):
+    try:
+        # If you have actual notification table:
+        # notification = Notification.query.get(notification_id)
+        # if notification:
+        #     notification.is_read = True
+        #     db.session.commit()
+        #     return jsonify({'success': True, 'message': 'Notification marked as read'}), 200
+        # else:
+        #     return jsonify({'error': 'Notification not found'}), 404
+        
+        # Mock response for now
+        return jsonify({
+            'success': True,
+            'message': f'Notification {notification_id} marked as read'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+if __name__ == '__main__':
+    app.run(debug=True,host='0.0.0.0')
