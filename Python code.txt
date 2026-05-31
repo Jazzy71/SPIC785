@@ -22,7 +22,7 @@ pymysql.install_as_MySQLdb()
 
 app = Flask(__name__)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:0602@192.168.4.183/carnest'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:0602@10.202.131.183/carnest'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = 'saipavan'
 bcrypt = Bcrypt(app)
@@ -114,6 +114,9 @@ class Evaluate(db.Model):
     fuel = db.Column(db.Text)
     price = db.Column(db.Text)
 
+    user_id = db.Column(db.Integer)
+    seller_email = db.Column(db.String(255))
+
 
 @app.route('/evaluate', methods=['POST'])
 def add_evaluate():
@@ -122,16 +125,24 @@ def add_evaluate():
 
         name = data.get('name')
         location = data.get('location')
-        type_ = data.get('type')  # type is a Python keyword, so use type_
+        type_ = data.get('type')
         year = data.get('year')
         km = data.get('km')
         fuel = data.get('fuel')
         price = data.get('price')
 
-        # Basic validation: ensure required fields are provided
         if not all([name, location, type_, year, km, fuel, price]):
             return jsonify({'message': 'All fields are required'}), 400
 
+        # Get latest logged-in user email from recent table
+        last_entry = Recent.query.order_by(Recent.id.desc()).first()
+
+        if not last_entry:
+            return jsonify({'message': 'No logged-in user found'}), 400
+
+        seller_email = last_entry.email
+
+        # Create new car entry
         new_entry = Evaluate(
             name=name,
             location=location,
@@ -139,36 +150,66 @@ def add_evaluate():
             year=year,
             km=km,
             fuel=fuel,
-            price=price
+            price=price,
+            seller_email=seller_email
         )
+
         db.session.add(new_entry)
         db.session.commit()
 
-        return jsonify({'message': 'Evaluate entry added successfully', 'id': new_entry.id}), 201
+        return jsonify({
+            'message': 'Evaluate entry added successfully',
+            'id': new_entry.id,
+            'seller_email': seller_email
+        }), 201
 
     except Exception as e:
+        db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
 
 @app.route('/evaluate', methods=['GET'])
 def get_all_evaluates():
     try:
-        entries = Evaluate.query.all()
-        result = []
 
-        for entry in entries:
-            result.append({
-                'id': entry.id,
-                'name': entry.name,
-                'location': entry.location,
-                'type': entry.type,
-                'year': entry.year,
-                'km': entry.km,
-                'fuel': entry.fuel,
-                'price': entry.price
+        query = text("""
+            SELECT
+                e.id,
+                e.name,
+                e.location,
+                e.type,
+                e.year,
+                e.km,
+                e.fuel,
+                e.price,
+                e.seller_email,
+                u.name AS seller_name,
+                u.mobilenumber AS seller_mobile
+            FROM evaluate e
+            LEFT JOIN userdetails u
+            ON e.seller_email = u.email
+        """)
+
+        result = db.session.execute(query)
+
+        cars = []
+
+        for row in result:
+            cars.append({
+                'id': row.id,
+                'name': row.name,
+                'location': row.location,
+                'type': row.type,
+                'year': row.year,
+                'km': row.km,
+                'fuel': row.fuel,
+                'price': row.price,
+                'seller_email': row.seller_email,
+                'seller_name': row.seller_name,
+                'seller_mobile': row.seller_mobile
             })
 
-        return jsonify(result), 200
+        return jsonify(cars), 200
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
