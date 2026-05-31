@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class CarnestChatService {
-  static const String apiKey = "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";
+  static const String apiKey = "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";
   static const String baseUrl = "https://api.groq.com/openai/v1/chat/completions";
 
   Future<String> sendMessage(String message) async {
